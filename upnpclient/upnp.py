@@ -260,12 +260,7 @@ class Service(CallActionMixin):
             datatype = findtext('dataType')
             send_events = statevar_node.attrib.get('sendEvents', 'yes').lower() == 'yes'
             allowed_values = set([e.text for e in findall('allowedValueList/allowedValue')])
-            self.statevars[name] = dict(
-                name=name,
-                datatype=datatype,
-                allowed_values=allowed_values,
-                send_events=send_events
-            )
+            self.statevars[name] = Statevar(self, name, datatype, allowed_values, send_events)
 
     def _read_actions(self):
         action_url = urljoin(self._url_base, self._control_url)
@@ -402,7 +397,7 @@ class Action(object):
         for name, statevar in self.argsdef_in.items():
             if name not in kwargs:
                 raise UPNPError('Missing required param \'%s\'' % (name))
-            valid, reasons = self.validate_arg(kwargs[name], statevar)
+            valid, reasons = statevar.validate_arg(kwargs[name])
             if not valid:
                 arg_reasons[name] = reasons
 
@@ -416,17 +411,23 @@ class Action(object):
         # Marshall the response to python data types
         out = {}
         for name, statevar in self.argsdef_out.items():
-            _, value = marshal_value(statevar['datatype'], soap_response[name])
+            _, value = statevar.marshal_value(soap_response[name])
             out[name] = value
 
         return out
 
-    @staticmethod
-    def validate_arg(arg, argdef):
+class Statevar(object):
+    def __init__(self, service, name, datatype, allowed_values, send_events):
+        self.service = service
+        self.name = name
+        self.datatype = datatype
+        self.allowed_values = allowed_values
+        self.send_events = send_events
+
+    def validate_arg(self, arg):
         """
         Validate an incoming (unicode) string argument according the UPnP spec. Raises UPNPError.
         """
-        datatype = argdef['datatype']
         reasons = set()
         ranges = {
             'ui1': (int, 0, 255),
@@ -438,39 +439,39 @@ class Action(object):
             'r4': (Decimal, Decimal('3.40282347E+38'), Decimal('1.17549435E-38'))
         }
         try:
-            if datatype in set(ranges.keys()):
-                v_type, v_min, v_max = ranges[datatype]
+            if self.datatype in set(ranges.keys()):
+                v_type, v_min, v_max = ranges[self.datatype]
                 if not v_min <= v_type(arg) <= v_max:
                     reasons.add('%r datatype must be a number in the range %s to %s' % (
-                        datatype, v_min, v_max))
+                        self.datatype, v_min, v_max))
 
-            elif datatype in {'r8', 'number', 'float', 'fixed.14.4'}:
+            elif self.datatype in {'r8', 'number', 'float', 'fixed.14.4'}:
                 v = Decimal(arg)
                 if v < 0:
                     assert Decimal('-1.79769313486232E308') <= v <= Decimal('4.94065645841247E-324')
                 else:
                     assert Decimal('4.94065645841247E-324') <= v <= Decimal('1.79769313486232E308')
 
-            elif datatype == 'char':
+            elif self.datatype == 'char':
                 v = arg.decode('utf8') if six.PY2 or isinstance(arg, bytes) else arg
                 assert len(v) == 1
 
-            elif datatype == 'string':
+            elif self.datatype == 'string':
                 v = arg.decode("utf8") if six.PY2 or isinstance(arg, bytes) else arg
                 if argdef['allowed_values'] and v not in argdef['allowed_values']:
                     reasons.add('Value %r not in allowed values list' % arg)
 
-            elif datatype == 'date':
+            elif self.datatype == 'date':
                 v = parse_date(arg)
                 if any((v.hour, v.minute, v.second)):
                     reasons.add("'date' datatype must not contain a time")
 
-            elif datatype in ('dateTime', 'dateTime.tz'):
+            elif self.datatype in ('dateTime', 'dateTime.tz'):
                 v = parse_date(arg)
-                if datatype == 'dateTime' and v.tzinfo is not None:
+                if self.datatype == 'dateTime' and v.tzinfo is not None:
                     reasons.add("'dateTime' datatype must not contain a timezone")
 
-            elif datatype in ('time', 'time.tz'):
+            elif self.datatype in ('time', 'time.tz'):
                 now = datetime.datetime.utcnow()
                 v = parse_date(arg, default=now)
                 if v.tzinfo is not None:
@@ -479,34 +480,37 @@ class Action(object):
                         v.day == now.day,
                         v.month == now.month,
                         v.year == now.year)):
-                    reasons.add('%r datatype must not contain a date' % datatype)
-                if datatype == 'time' and v.tzinfo is not None:
-                    reasons.add('%r datatype must not have timezone information' % datatype)
+                    reasons.add('%r datatype must not contain a date' % self.datatype)
+                if self.datatype == 'time' and v.tzinfo is not None:
+                    reasons.add('%r datatype must not have timezone information' % self.datatype)
 
-            elif datatype == 'boolean':
+            elif self.datatype == 'boolean':
                 valid = {'true', 'yes', '1', 'false', 'no', '0'}
                 if arg.lower() not in valid:
-                    reasons.add('%r datatype must be one of %s' % (datatype, ','.join(valid)))
+                    reasons.add('%r datatype must be one of %s' % (self.datatype, ','.join(valid)))
 
-            elif datatype == 'bin.base64':
+            elif self.datatype == 'bin.base64':
                 b64decode(arg)
 
-            elif datatype == 'bin.hex':
+            elif self.datatype == 'bin.hex':
                 unhexlify(arg)
 
-            elif datatype == 'uri':
+            elif self.datatype == 'uri':
                 urlparse(arg)
 
-            elif datatype == 'uuid':
+            elif self.datatype == 'uuid':
                 if not re.match(
                         r'^[0-9a-f]{8}\-[0-9a-f]{4}\-[0-9a-f]{4}\-[0-9a-f]{4}\-[0-9a-f]{12}$',
                         arg, re.I):
-                    reasons.add('%r datatype must contain a valid UUID')
+                    reasons.add('%r datatype must contain a valid UUID' % self.datatype)
 
             else:
-                reasons.add("%r datatype is unrecognised." % datatype)
+                reasons.add("%r datatype is unrecognised." % self.datatype)
 
         except ValueError as exc:
             reasons.add(str(exc))
 
         return not bool(len(reasons)), reasons
+
+    def marshal_value(self, value):
+        return marshal_value(self.datatype, value)
