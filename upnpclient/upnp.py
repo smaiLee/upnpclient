@@ -272,17 +272,17 @@ class Service(CallActionMixin):
 
         for action_node in self._findall('actionList/action'):
             name = action_node.findtext('name', namespaces=action_node.nsmap)
-            argsdef_in = []
-            argsdef_out = []
+            argsdef_in = {}
+            argsdef_out = {}
             for arg_node in action_node.findall(
                     'argumentList/argument', namespaces=action_node.nsmap):
                 findtext = partial(arg_node.findtext, namespaces=arg_node.nsmap)
                 arg_name = findtext('name')
                 arg_statevar = self.statevars[findtext('relatedStateVariable')]
                 if findtext('direction').lower() == 'in':
-                    argsdef_in.append((arg_name, arg_statevar))
+                    argsdef_in[arg_name] = arg_statevar
                 else:
-                    argsdef_out.append((arg_name, arg_statevar))
+                    argsdef_out[arg_name] = arg_statevar
             action = Action(self, action_url, self.service_type, name, argsdef_in, argsdef_out)
             self.action_map[name] = action
             self.actions.append(action)
@@ -399,7 +399,7 @@ class Action(object):
     def __call__(self, **kwargs):
         arg_reasons = {}
         # Validate arguments using the SCPD stateVariable definitions
-        for name, statevar in self.argsdef_in:
+        for name, statevar in self.argsdef_in.items():
             if name not in kwargs:
                 raise UPNPError('Missing required param \'%s\'' % (name))
             valid, reasons = self.validate_arg(kwargs[name], statevar)
@@ -415,7 +415,7 @@ class Action(object):
 
         # Marshall the response to python data types
         out = {}
-        for name, statevar in self.argsdef_out:
+        for name, statevar in self.argsdef_out.items():
             _, value = marshal_value(statevar['datatype'], soap_response[name])
             out[name] = value
 
