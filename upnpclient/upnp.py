@@ -424,6 +424,9 @@ class Statevar(object):
         self.allowed_values = allowed_values
         self.send_events = send_events
 
+    def __repr__(self):
+        return "<Statevar '%s'>" % (self.name)
+
     def validate_arg(self, arg):
         """
         Validate an incoming (unicode) string argument according the UPnP spec. Raises UPNPError.
